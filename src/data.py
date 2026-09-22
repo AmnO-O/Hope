@@ -430,12 +430,21 @@ class CompDataset(_DatasetBase):
                     p_mask = p['attention_mask'].squeeze(0)
                     p_span = torch.zeros_like(p_mask, dtype=torch.bool)
 
-                    if offsets is not None and w and w in text:
-                        start_char = text.find(w)
-                        end_char = start_char + len(w)
-                        for j, (cs, ce) in enumerate(offsets):
-                            if cs < end_char and ce > start_char:
-                                p_span[j] = True
+                    if offsets is not None and w and text:
+                        quoted = f"'{w}'"
+                        if quoted in text:
+                            sc = text.rfind(quoted) + 1
+                            ec = sc + len(w)
+                        elif text.startswith(f"{w}:"):
+                            sc, ec = 0, len(w)
+                        else:
+                            sc = text.rfind(w)
+                            ec = sc + len(w) if sc != -1 else -1
+
+                        if sc != -1 and ec > sc:
+                            for j, (cs, ce) in enumerate(offsets):
+                                if cs < ec and ce > sc:
+                                    p_span[j] = True
 
                     if not p_span.any():
                         l_int = int(p_mask.sum().item())

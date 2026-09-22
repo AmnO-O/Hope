@@ -46,6 +46,23 @@ class LearnedLayerWeights(nn.Module):
         return (stacked_hidden * w).sum(dim=0)
 
 
+class SharedProjector(nn.Module):
+    """Residual 2-layer MLP projection head into L2-normalized metric space."""
+
+    def __init__(self, hidden_size: int = 768, proj_dim: int = 768, dropout: float = 0.1):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, proj_dim),
+        )
+        self.norm = nn.LayerNorm(proj_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.norm(x + self.net(x))
+
+
 class TwoStreamBiEncoderModel(nn.Module):
     """Two-Stream Bi-Encoder for Compositionality and Uncertainty Prediction."""
 
@@ -64,6 +81,7 @@ class TwoStreamBiEncoderModel(nn.Module):
         shared_head: bool = False,
         use_adaptive_gate: bool = False,
         gate_hidden: int = 128,
+        use_wep_infonce: bool = False,
     ):
         super().__init__()
         self.lm = AutoModel.from_pretrained(backbone)
@@ -73,11 +91,19 @@ class TwoStreamBiEncoderModel(nn.Module):
         self.extract_layers = extract_layers
         self.extract_mode = extract_mode
         self._shared_head = bool(shared_head)
+        self.use_wep_infonce = bool(use_wep_infonce)
 
         if extract_mode == "learned" and extract_layers:
             self.layer_agg = LearnedLayerWeights(len(extract_layers))
         else:
             self.layer_agg = None
+
+        # Shared metric projector for WEP-InfoNCE alignment
+        self.projector = SharedProjector(
+            hidden_size=hidden_size,
+            proj_dim=hidden_size,
+            dropout=dropout,
+        )
 
         # Fusion: Cross-Attention Semantic Shift Transformer or Linear projection
         if fusion_type == "cross_attention":
@@ -141,6 +167,19 @@ class TwoStreamBiEncoderModel(nn.Module):
         self.last_head_gate: Optional[torch.Tensor] = None
         self.last_pv_gate: Optional[torch.Tensor] = None
 
+        # Cached projected vectors for WEP-InfoNCE
+        self.last_z_ctx_mod: Optional[torch.Tensor] = None
+        self.last_z_proto_mod: Optional[torch.Tensor] = None
+        self.last_z_ctx_head: Optional[torch.Tensor] = None
+        self.last_z_proto_head: Optional[torch.Tensor] = None
+        self.last_z_ctx_pv: Optional[torch.Tensor] = None
+        self.last_z_proto_pv: Optional[torch.Tensor] = None
+        self.last_z_ctx: Optional[torch.Tensor] = None
+        self.last_z_proto: Optional[torch.Tensor] = None
+        self.last_mod_cos_z: Optional[torch.Tensor] = None
+        self.last_head_cos_z: Optional[torch.Tensor] = None
+        self.last_pv_cos_z: Optional[torch.Tensor] = None
+
     @property
     def mod_head(self) -> nn.Module:
         return self._head if self._shared_head else self._head_mod
@@ -171,7 +210,7 @@ class TwoStreamBiEncoderModel(nn.Module):
 
     def pred_heads(self) -> List[nn.Module]:
         """Return the prediction heads, fusion layers, and learned layer weights for Phase 1 unfreezing."""
-        modules = [self.fusion, self.mod_head, self.head_head, self.pv_head]
+        modules = [self.fusion, self.mod_head, self.head_head, self.pv_head, self.projector]
         # Shared mode aliases all three to the same module - dedup by id so the
         # optimizer param group / EMA never sees the same params twice.
         seen = set()
@@ -408,6 +447,29 @@ class TwoStreamBiEncoderModel(nn.Module):
             p_cos = self.last_cos_sim
             p_gate = getattr(self.fusion, 'last_g', None)
 
+            # Metric projection for WEP-InfoNCE
+            z_ctx_mod = self.projector(h_ctx_mod)
+            z_ctx_head = self.projector(h_ctx_head)
+            z_ctx_pv = self.projector(h_ctx_pv)
+            z_word = self.projector(h_word)
+
+            z_ctx = torch.where(
+                (tgt == 0).unsqueeze(-1), z_ctx_mod,
+                torch.where((tgt == 1).unsqueeze(-1), z_ctx_head, z_ctx_pv),
+            )
+            self.last_z_ctx = z_ctx
+            self.last_z_proto = z_word
+            self.last_z_ctx_mod = z_ctx_mod
+            self.last_z_proto_mod = z_word
+            self.last_z_ctx_head = z_ctx_head
+            self.last_z_proto_head = z_word
+            self.last_z_ctx_pv = z_ctx_pv
+            self.last_z_proto_pv = z_word
+
+            self.last_mod_cos_z = corrected_cosine_similarity(z_ctx_mod, z_word, eps=1e-8)
+            self.last_head_cos_z = corrected_cosine_similarity(z_ctx_head, z_word, eps=1e-8)
+            self.last_pv_cos_z = corrected_cosine_similarity(z_ctx_pv, z_word, eps=1e-8)
+
             mu = torch.where((tgt == 0), m_mu, torch.where((tgt == 1), h_mu, p_mu))
             sigma = torch.where((tgt == 0), m_sig, torch.where((tgt == 1), h_sig, p_sig))
 
@@ -490,6 +552,25 @@ class TwoStreamBiEncoderModel(nn.Module):
                 h_proto_head = self._get_prototype_from_emb(input_ids, head_span_mask)
                 h_proto_pv = 0.5 * (h_proto_mod + h_proto_head)
 
+            # Metric projection for WEP-InfoNCE
+            z_ctx_mod = self.projector(h_ctx_mod)
+            z_proto_mod = self.projector(h_proto_mod)
+            z_ctx_head = self.projector(h_ctx_head)
+            z_proto_head = self.projector(h_proto_head)
+            z_ctx_pv = self.projector(h_ctx_pv)
+            z_proto_pv = self.projector(h_proto_pv)
+
+            self.last_z_ctx_mod = z_ctx_mod
+            self.last_z_proto_mod = z_proto_mod
+            self.last_z_ctx_head = z_ctx_head
+            self.last_z_proto_head = z_proto_head
+            self.last_z_ctx_pv = z_ctx_pv
+            self.last_z_proto_pv = z_proto_pv
+
+            self.last_mod_cos_z = corrected_cosine_similarity(z_ctx_mod, z_proto_mod, eps=1e-8)
+            self.last_head_cos_z = corrected_cosine_similarity(z_ctx_head, z_proto_head, eps=1e-8)
+            self.last_pv_cos_z = corrected_cosine_similarity(z_ctx_pv, z_proto_pv, eps=1e-8)
+
             mod_mu, mod_sigma = self._forward_pair(h_ctx_mod, h_proto_mod, self.mod_head, state=align_state)
             self.last_mod_cos = getattr(self, 'last_cos_sim', None)
             self.last_mod_gate = getattr(self.fusion, 'last_g', None)
@@ -528,6 +609,15 @@ def build_two_stream_model(
         hidden_size=cfg.hidden_size,
         head_hidden=cfg.head_hidden,
         dropout=cfg.dropout,
+        fusion_type=getattr(cfg, 'fusion_type', 'cross_attention'),
+        fusion_layers=getattr(cfg, 'fusion_layers', 2),
+        fusion_heads=getattr(cfg, 'fusion_heads', 4),
+        extract_layers=getattr(cfg, 'extract_layers', (14, 15, 16, 17, 18)),
+        extract_mode=getattr(cfg, 'extract_mode', 'mean'),
+        shared_head=getattr(cfg, 'shared_head', False),
+        use_adaptive_gate=getattr(cfg, 'use_adaptive_gate', False),
+        gate_hidden=getattr(cfg, 'gate_hidden', 128),
+        use_wep_infonce=getattr(cfg, 'use_wep_infonce', False),
     )
     if load_from is not None:
         load_from = Path(load_from)
