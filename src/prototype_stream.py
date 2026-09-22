@@ -222,7 +222,7 @@ class SemanticShiftFusion(nn.Module):
 
         s_feat = self.state_emb(state)
         g = self.gate_net(torch.cat([h_ctx, h_proto, s_feat], dim=-1))  # (B, 1)
-        self.last_g = g.detach()
+        self.last_g = g.detach().float()
         alpha = 0.5  # Max context attenuation
         beta = 1.0   # Max prototype shift amplification
         ctx_scaled = (1.0 - alpha * g) * h_ctx

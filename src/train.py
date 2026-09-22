@@ -388,18 +388,18 @@ def evaluate(model, dataloader, device, return_all: bool = False,
                 pg = getattr(model, 'last_pv_gate', None)
 
                 bsz = len(mod_pred)
-                all_mod_cos.append(mc.detach().cpu().numpy().reshape(-1) if mc is not None else np.zeros(bsz))
-                all_head_cos.append(hc.detach().cpu().numpy().reshape(-1) if hc is not None else np.zeros(bsz))
-                all_pv_cos.append(pc.detach().cpu().numpy().reshape(-1) if pc is not None else np.zeros(bsz))
-                all_mod_cos_z.append(mcz.detach().cpu().numpy().reshape(-1) if mcz is not None else np.zeros(bsz))
-                all_head_cos_z.append(hcz.detach().cpu().numpy().reshape(-1) if hcz is not None else np.zeros(bsz))
-                all_pv_cos_z.append(pcz.detach().cpu().numpy().reshape(-1) if pcz is not None else np.zeros(bsz))
+                all_mod_cos.append(mc.detach().float().cpu().numpy().reshape(-1) if mc is not None else np.zeros(bsz))
+                all_head_cos.append(hc.detach().float().cpu().numpy().reshape(-1) if hc is not None else np.zeros(bsz))
+                all_pv_cos.append(pc.detach().float().cpu().numpy().reshape(-1) if pc is not None else np.zeros(bsz))
+                all_mod_cos_z.append(mcz.detach().float().cpu().numpy().reshape(-1) if mcz is not None else np.zeros(bsz))
+                all_head_cos_z.append(hcz.detach().float().cpu().numpy().reshape(-1) if hcz is not None else np.zeros(bsz))
+                all_pv_cos_z.append(pcz.detach().float().cpu().numpy().reshape(-1) if pcz is not None else np.zeros(bsz))
                 all_align_state.append(st.detach().cpu().numpy().reshape(-1) if st is not None else np.full(bsz, -1, dtype=int))
                 if mg is not None and hg is not None and pg is not None:
                     has_gate = True
-                    all_mod_gate.append(mg.detach().cpu().numpy().reshape(-1))
-                    all_head_gate.append(hg.detach().cpu().numpy().reshape(-1))
-                    all_pv_gate.append(pg.detach().cpu().numpy().reshape(-1))
+                    all_mod_gate.append(mg.detach().float().cpu().numpy().reshape(-1))
+                    all_head_gate.append(hg.detach().float().cpu().numpy().reshape(-1))
+                    all_pv_gate.append(pg.detach().float().cpu().numpy().reshape(-1))
 
             lab = batch.get('has_label')
             if lab is not None:
