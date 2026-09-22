@@ -1,0 +1,6 @@
+{
+  "name": "MoTune - Two-Stream Compositionality Prediction",
+  "description": "Two-Stream Bi-Encoder Gaussian Compositionality Prediction for Noun Compounds and Particle Verbs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
